@@ -5,6 +5,8 @@ VisualStudioVersion = 14.0.24720.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EStore", "EStore\EStore.csproj", "{029F3FBA-7070-4E3C-914F-50FD9742A4B4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EStore.ConsoleTest", "EStore.ConsoleTest\EStore.ConsoleTest.csproj", "{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{029F3FBA-7070-4E3C-914F-50FD9742A4B4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{029F3FBA-7070-4E3C-914F-50FD9742A4B4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{029F3FBA-7070-4E3C-914F-50FD9742A4B4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

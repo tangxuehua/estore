@@ -4,15 +4,16 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{029F3FBA-7070-4E3C-914F-50FD9742A4B4}</ProjectGuid>
-    <OutputType>Library</OutputType>
+    <ProjectGuid>{AA3AA6D3-FEF5-4F03-B6EA-03AFEEE791E7}</ProjectGuid>
+    <OutputType>Exe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>EStore</RootNamespace>
-    <AssemblyName>EStore</AssemblyName>
+    <RootNamespace>EStore.ConsoleTest</RootNamespace>
+    <AssemblyName>EStore.ConsoleTest</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
@@ -20,16 +21,15 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Autofac, Version=3.5.0.0, Culture=neutral, PublicKeyToken=17863af14b0044da, processorArchitecture=MSIL">
@@ -48,7 +48,6 @@
       <HintPath>..\packages\log4net.2.0.3\lib\net40-full\log4net.dll</HintPath>
       <Private>True</Private>
     </Reference>
-    <Reference Include="Microsoft.VisualBasic" />
     <Reference Include="Newtonsoft.Json, Version=7.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <HintPath>..\packages\Newtonsoft.Json.7.0.1\lib\net45\Newtonsoft.Json.dll</HintPath>
       <Private>True</Private>
@@ -65,45 +64,18 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ByteUtils.cs" />
-    <Compile Include="DefaultEventVersionStore.cs" />
-    <Compile Include="EventAppendStatus.cs" />
-    <Compile Include="StreamIndex.cs" />
-    <Compile Include="EventStream.cs" />
-    <Compile Include="IEventVersionStore.cs" />
-    <Compile Include="StreamLogRecord.cs" />
-    <Compile Include="IEventStore.cs" />
-    <Compile Include="DefaultEventStore.cs" />
+    <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Storage\Chunk.cs" />
-    <Compile Include="Storage\ChunkFooter.cs" />
-    <Compile Include="Storage\ChunkHeader.cs" />
-    <Compile Include="Storage\ChunkManager.cs" />
-    <Compile Include="Storage\ChunkManagerConfig.cs" />
-    <Compile Include="Storage\ChunkReader.cs" />
-    <Compile Include="Storage\ChunkUtil.cs" />
-    <Compile Include="Storage\ChunkWriter.cs" />
-    <Compile Include="Storage\DefaultChunkStatisticService.cs" />
-    <Compile Include="Storage\Exceptions\ChunkBadDataException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkCompleteException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkCreateException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkFileNotExistException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkNotExistException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkReadException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkWriteException.cs" />
-    <Compile Include="Storage\FileNamingStrategies\DefaultFileNamingStrategy.cs" />
-    <Compile Include="Storage\FileNamingStrategies\IFileNamingStrategy.cs" />
-    <Compile Include="Storage\IChunkStatisticService.cs" />
-    <Compile Include="Storage\LogRecords\BufferLogRecord.cs" />
-    <Compile Include="Storage\LogRecords\ILogRecord.cs" />
-    <Compile Include="Storage\ReaderWorkItem.cs" />
-    <Compile Include="Storage\RecordBufferReadResult.cs" />
-    <Compile Include="Storage\RecordWriteResult.cs" />
-    <Compile Include="Storage\WriterWorkItem.cs" />
-    <Compile Include="StreamIdUtil.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="App.config" />
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\EStore\EStore.csproj">
+      <Project>{029f3fba-7070-4e3c-914f-50fd9742a4b4}</Project>
+      <Name>EStore</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
