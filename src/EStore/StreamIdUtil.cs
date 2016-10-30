@@ -20,7 +20,7 @@ namespace EStore
                 _portBytes = BitConverter.GetBytes(port);
             }
             var positionBytes = BitConverter.GetBytes(streamPosition);
-            var streamIdBytes = ByteUtils.Combine(_ipBytes, _portBytes, positionBytes);
+            var streamIdBytes = ByteUtil.Combine(_ipBytes, _portBytes, positionBytes);
 
             return ObjectId.ToHexString(streamIdBytes);
         }

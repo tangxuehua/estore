@@ -32,31 +32,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="Autofac, Version=3.5.0.0, Culture=neutral, PublicKeyToken=17863af14b0044da, processorArchitecture=MSIL">
-      <HintPath>..\packages\Autofac.3.5.2\lib\net40\Autofac.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
-    <Reference Include="Dapper, Version=1.40.0.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\Dapper.1.42\lib\net45\Dapper.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
-    <Reference Include="ECommon, Version=2.0.3.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\ECommon.2.0.3\lib\net45\ECommon.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
-    <Reference Include="log4net, Version=1.2.13.0, Culture=neutral, PublicKeyToken=669e0ddf0bb1aa2a, processorArchitecture=MSIL">
-      <HintPath>..\packages\log4net.2.0.3\lib\net40-full\log4net.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
     <Reference Include="Microsoft.VisualBasic" />
-    <Reference Include="Newtonsoft.Json, Version=7.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <HintPath>..\packages\Newtonsoft.Json.7.0.1\lib\net45\Newtonsoft.Json.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
-    <Reference Include="protobuf-net, Version=2.0.0.668, Culture=neutral, PublicKeyToken=257b51d87d2e4d67, processorArchitecture=MSIL">
-      <HintPath>..\packages\protobuf-net.2.0.0.668\lib\net40\protobuf-net.dll</HintPath>
-      <Private>True</Private>
-    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="Microsoft.CSharp" />
@@ -65,45 +41,22 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ByteUtils.cs" />
-    <Compile Include="DefaultEventVersionStore.cs" />
     <Compile Include="EventAppendStatus.cs" />
-    <Compile Include="StreamIndex.cs" />
     <Compile Include="EventStream.cs" />
-    <Compile Include="IEventVersionStore.cs" />
     <Compile Include="StreamLogRecord.cs" />
     <Compile Include="IEventStore.cs" />
     <Compile Include="DefaultEventStore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Storage\Chunk.cs" />
-    <Compile Include="Storage\ChunkFooter.cs" />
-    <Compile Include="Storage\ChunkHeader.cs" />
-    <Compile Include="Storage\ChunkManager.cs" />
-    <Compile Include="Storage\ChunkManagerConfig.cs" />
-    <Compile Include="Storage\ChunkReader.cs" />
-    <Compile Include="Storage\ChunkUtil.cs" />
-    <Compile Include="Storage\ChunkWriter.cs" />
-    <Compile Include="Storage\DefaultChunkStatisticService.cs" />
-    <Compile Include="Storage\Exceptions\ChunkBadDataException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkCompleteException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkCreateException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkFileNotExistException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkNotExistException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkReadException.cs" />
-    <Compile Include="Storage\Exceptions\ChunkWriteException.cs" />
-    <Compile Include="Storage\FileNamingStrategies\DefaultFileNamingStrategy.cs" />
-    <Compile Include="Storage\FileNamingStrategies\IFileNamingStrategy.cs" />
-    <Compile Include="Storage\IChunkStatisticService.cs" />
-    <Compile Include="Storage\LogRecords\BufferLogRecord.cs" />
-    <Compile Include="Storage\LogRecords\ILogRecord.cs" />
-    <Compile Include="Storage\ReaderWorkItem.cs" />
-    <Compile Include="Storage\RecordBufferReadResult.cs" />
-    <Compile Include="Storage\RecordWriteResult.cs" />
-    <Compile Include="Storage\WriterWorkItem.cs" />
     <Compile Include="StreamIdUtil.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\ecommon\src\ECommon\ECommon.csproj">
+      <Project>{d60f17ce-ff99-42cd-af71-97c157b17af3}</Project>
+      <Name>ECommon</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

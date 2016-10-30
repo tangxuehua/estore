@@ -1,6 +1,8 @@
 ﻿using System.IO;
 using System.Net;
-using EStore.Storage.LogRecords;
+using ECommon.Extensions;
+using ECommon.Storage.LogRecords;
+using ECommon.Utilities;
 
 namespace EStore
 {
@@ -21,15 +23,15 @@ namespace EStore
         {
             var srcOffset = 0;
 
-            LogPosition = ByteUtils.DecodeLong(recordBuffer, srcOffset, out srcOffset);
-            StreamId = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
-            SourceId = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
-            Name = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
-            Version = ByteUtils.DecodeInt(recordBuffer, srcOffset, out srcOffset);
-            Events = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
-            Timestamp = ByteUtils.DecodeDateTime(recordBuffer, srcOffset, out srcOffset);
-            CommandId = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
-            Items = ByteUtils.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            LogPosition = ByteUtil.DecodeLong(recordBuffer, srcOffset, out srcOffset);
+            StreamId = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            SourceId = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            Name = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            Version = ByteUtil.DecodeInt(recordBuffer, srcOffset, out srcOffset);
+            Events = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            Timestamp = ByteUtil.DecodeDateTime(recordBuffer, srcOffset, out srcOffset);
+            CommandId = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
+            Items = ByteUtil.DecodeString(recordBuffer, srcOffset, out srcOffset);
         }
 
         public void WriteTo(long logPosition, BinaryWriter writer)
