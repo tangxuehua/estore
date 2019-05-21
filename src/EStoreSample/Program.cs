@@ -30,26 +30,26 @@ namespace EStoreSample
                 .RegisterEStoreComponents()
                 .BuildContainer();
 
-            string chunkFileStoreRootPath = @"d:\event-store";
-            int messageChunkDataSize = 256 * 1024 * 1024;
-            int indexChunkDataSize = 256 * 1024 * 1024;
-            int chunkFlushInterval = 100;
-            int chunkCacheMaxCount = 15;
-            int chunkCacheMinCount = 15;
-            int maxLogRecordSize = 5 * 1024 * 1024;
-            int maxIndexLogRecordSize = 5 * 1024 * 1024;
-            int chunkWriteBuffer = 128 * 1024;
-            int chunkReadBuffer = 128 * 1024;
-            bool syncFlush = false;
-            FlushOption flushOption = FlushOption.FlushToOS;
-            bool enableCache = true;
+            var chunkFileStoreRootPath = @"d:\event-store";
+            var eventDataChunkDataSize = 256 * 1024 * 1024;
+            var indexChunkDataSize = 256 * 1024 * 1024;
+            var chunkFlushInterval = 100;
+            var chunkCacheMaxCount = 15;
+            var chunkCacheMinCount = 15;
+            var maxDataLogRecordSize = 5 * 1024 * 1024;
+            var maxIndexLogRecordSize = 5 * 1024 * 1024;
+            var chunkWriteBuffer = 128 * 1024;
+            var chunkReadBuffer = 128 * 1024;
+            var syncFlush = false;
+            var flushOption = FlushOption.FlushToOS;
+            var enableCache = true;
             var preCacheChunkCount = 10;
-            int messageChunkLocalCacheSize = 300000;
+            var chunkLocalCacheSize = 300000;
 
-            var chunkConfig = new ChunkManagerConfig(
-                Path.Combine(chunkFileStoreRootPath, "aggregate-event-chunks"),
-                new DefaultFileNamingStrategy("aggregate-event-chunk-"),
-                messageChunkDataSize,
+            var eventDataChunkConfig = new ChunkManagerConfig(
+                Path.Combine(chunkFileStoreRootPath, "event-data-chunks"),
+                new DefaultFileNamingStrategy("event-data-chunk-"),
+                eventDataChunkDataSize,
                 0,
                 0,
                 chunkFlushInterval,
@@ -57,18 +57,18 @@ namespace EStoreSample
                 syncFlush,
                 flushOption,
                 Environment.ProcessorCount * 8,
-                maxLogRecordSize,
+                maxDataLogRecordSize,
                 chunkWriteBuffer,
                 chunkReadBuffer,
                 chunkCacheMaxCount,
                 chunkCacheMinCount,
                 preCacheChunkCount,
                 5,
-                messageChunkLocalCacheSize,
+                chunkLocalCacheSize,
                 true);
-            var aggregateIndexChunkConfig = new ChunkManagerConfig(
-                Path.Combine(chunkFileStoreRootPath, "aggregate-index-chunks"),
-                new DefaultFileNamingStrategy("aggregate-index-chunk-"),
+            var eventIndexChunkConfig = new ChunkManagerConfig(
+                Path.Combine(chunkFileStoreRootPath, "event-index-chunks"),
+                new DefaultFileNamingStrategy("event-index-chunk-"),
                 indexChunkDataSize,
                 0,
                 0,
@@ -84,7 +84,7 @@ namespace EStoreSample
                 chunkCacheMinCount,
                 preCacheChunkCount,
                 5,
-                messageChunkLocalCacheSize,
+                chunkLocalCacheSize,
                 true);
             var commandIndexChunkConfig = new ChunkManagerConfig(
                 Path.Combine(chunkFileStoreRootPath, "command-index-chunks"),
@@ -104,15 +104,12 @@ namespace EStoreSample
                 chunkCacheMinCount,
                 preCacheChunkCount,
                 5,
-                messageChunkLocalCacheSize,
+                chunkLocalCacheSize,
                 true);
 
-            var commandManager = ObjectContainer.Resolve<ICommandIdManager>() as DefaultCommandIdManager;
             var eventStore = ObjectContainer.Resolve<IEventStore>() as DefaultEventStore;
 
-            commandManager.Init(commandIndexChunkConfig);
-            commandManager.Start();
-            eventStore.Init(chunkConfig, aggregateIndexChunkConfig);
+            eventStore.Init(eventDataChunkConfig, eventIndexChunkConfig, commandIndexChunkConfig);
             eventStore.Start();
 
             var eventStream = new TestEventStream
@@ -154,7 +151,6 @@ namespace EStoreSample
             });
 
             Console.ReadLine();
-            commandManager.Stop();
             eventStore.Stop();
         }
 

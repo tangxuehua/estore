@@ -7,7 +7,6 @@ namespace EStoreSample
     {
         public static ECommonConfiguration RegisterEStoreComponents(this ECommonConfiguration configuration)
         {
-            configuration.SetDefault<ICommandIdManager, DefaultCommandIdManager>();
             configuration.SetDefault<IEventStore, DefaultEventStore>();
 
             return configuration;

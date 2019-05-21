@@ -3,7 +3,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using ECommon.Logging;
 using ECommon.Scheduling;
 using ECommon.Storage;
@@ -13,64 +16,99 @@ namespace EStore
 {
     public class DefaultEventStore : IEventStore
     {
-        private ChunkManager _chunkManager;
-        private ChunkWriter _chunkWriter;
-        private ChunkReader _chunkReader;
-        private ChunkManager _indexChunkManager;
-        private ChunkWriter _indexChunkWriter;
-        private ChunkReader _indexChunkReader;
+        #region Private Variables
+
         private readonly object _lockObj = new object();
-        private ConcurrentQueue<string> _changedAggregateQueue = new ConcurrentQueue<string>();
-        private ConcurrentQueue<string> _swappedAggregateQueue = new ConcurrentQueue<string>();
-        private readonly ICommandIdManager _commandIdManager;
+        private const char IndexSeparator = ';';
+        private const char IndexContentSeparator = ':';
+        private const int PersistIndexBatchSize = 1000;
+        private ChunkManager _eventDataChunkManager;
+        private ChunkWriter _eventDataChunkWriter;
+        private ChunkReader _eventDataChunkReader;
+        private ChunkManager _eventIndexChunkManager;
+        private ChunkWriter _eventIndexChunkWriter;
+        private ChunkReader _eventIndexChunkReader;
+        private ChunkManager _commandIndexChunkManager;
+        private ChunkWriter _commandIndexChunkWriter;
+        private ChunkReader _commandIndexChunkReader;
+        private readonly ConcurrentDictionary<long, ConcurrentDictionary<string, byte>> _commandIndexDict = new ConcurrentDictionary<long, ConcurrentDictionary<string, byte>>();
         private readonly ConcurrentDictionary<string, AggregateLatestVersionData> _aggregateLatestVersionDict = new ConcurrentDictionary<string, AggregateLatestVersionData>();
+        private ConcurrentQueue<EventStreamRecord> _eventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
+        private ConcurrentQueue<EventStreamRecord> _swapedEventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
         private readonly IScheduleService _scheduleService;
         private readonly ILogger _logger;
+        private bool _isEventIndexLoaded = false;
+        private bool _isCommandIndexLoaded = false;
+        private readonly ManualResetEvent _loadIndexWaitHandle = new ManualResetEvent(false);
 
-        /// <summary>Represents the interval of the persist aggregate index task, the default value is 1 seconds.
+        #endregion
+
+        /// <summary>Represents the interval of the persist event index and command index task, the default value is 1 seconds.
         /// </summary>
         public int PersistIndexIntervalMilliseconds { get; set; }
+        /// <summary>Represents the max cache time seconds of the command index, the default value is 3 days.
+        /// </summary>
+        public int MaxCommandIndexCacheTimeSeconds { get; set; }
+        /// <summary>Represents the interval of remove command index task, the default value is 10 seconds.
+        /// </summary>
+        public int RemoveExpiredCommandIndexCacheKeyIntervalSeconds { get; set; }
 
-        public DefaultEventStore(ICommandIdManager commandIdManager, IScheduleService scheduleService, ILoggerFactory loggerFactory)
+        public DefaultEventStore(IScheduleService scheduleService, ILoggerFactory loggerFactory)
         {
-            _commandIdManager = commandIdManager;
             _scheduleService = scheduleService;
             PersistIndexIntervalMilliseconds = 1000;
+            RemoveExpiredCommandIndexCacheKeyIntervalSeconds = 10 * 1000;
+            MaxCommandIndexCacheTimeSeconds = 60 * 60 * 24 * 3;
             _logger = loggerFactory.Create(GetType().FullName);
         }
 
-        public void Init(ChunkManagerConfig eventChunkConfig, ChunkManagerConfig indexChunkConfig)
+        public void Init(ChunkManagerConfig eventDataChunkConfig, ChunkManagerConfig eventIndexChunkConfig, ChunkManagerConfig commandIndexChunkConfig)
         {
-            _chunkManager = new ChunkManager("AggregateEventChunk", eventChunkConfig, false);
-            _chunkWriter = new ChunkWriter(_chunkManager);
-            _chunkReader = new ChunkReader(_chunkManager, _chunkWriter);
-            _indexChunkManager = new ChunkManager("AggregateIndexChunk", indexChunkConfig, false);
-            _indexChunkWriter = new ChunkWriter(_indexChunkManager);
-            _indexChunkReader = new ChunkReader(_indexChunkManager, _indexChunkWriter);
-            _chunkManager.Load(ReadEventStreamRecord);
-            _indexChunkManager.Load(ReadIndexRecord);
-            _chunkWriter.Open();
-            _indexChunkWriter.Open();
-            LoadAggregateVersionIndexData();
+            _eventDataChunkManager = new ChunkManager("EventDataChunk", eventDataChunkConfig, false);
+            _eventDataChunkWriter = new ChunkWriter(_eventDataChunkManager);
+            _eventDataChunkReader = new ChunkReader(_eventDataChunkManager, _eventDataChunkWriter);
+
+            _eventIndexChunkManager = new ChunkManager("EventIndexChunk", eventIndexChunkConfig, false);
+            _eventIndexChunkWriter = new ChunkWriter(_eventIndexChunkManager);
+            _eventIndexChunkReader = new ChunkReader(_eventIndexChunkManager, _eventIndexChunkWriter);
+
+            _commandIndexChunkManager = new ChunkManager("CommandIndexChunk", commandIndexChunkConfig, false);
+            _commandIndexChunkWriter = new ChunkWriter(_commandIndexChunkManager);
+            _commandIndexChunkReader = new ChunkReader(_commandIndexChunkManager, _commandIndexChunkWriter);
+
+            _eventDataChunkManager.Load(ReadEventStreamRecord);
+            _eventIndexChunkManager.Load(ReadIndexRecord);
+            _commandIndexChunkManager.Load(ReadIndexRecord);
+
+            _eventDataChunkWriter.Open();
+            _eventIndexChunkWriter.Open();
+            _commandIndexChunkWriter.Open();
+
+            LoadIndexData();
         }
         public void Start()
         {
             _scheduleService.StartTask("PersistIndex", PersistIndex, PersistIndexIntervalMilliseconds, PersistIndexIntervalMilliseconds);
+            _scheduleService.StartTask("RemoveExpiredCommandIndexes", RemoveExpiredCommandIndexes, RemoveExpiredCommandIndexCacheKeyIntervalSeconds, RemoveExpiredCommandIndexCacheKeyIntervalSeconds);
         }
         public void Stop()
         {
             _scheduleService.StopTask("PersistIndex");
-            _chunkWriter.Close();
+            _scheduleService.StopTask("RemoveExpiredCommandIndexes");
+            _eventDataChunkWriter.Close();
         }
         public EventAppendResult AppendEventStream(IEventStream eventStream)
         {
             lock (_lockObj)
             {
-                //从CommandId管理器判断命令是否重复
-                var commandInfo = new CommandInfo { CommandId = eventStream.CommandId, CommandCreateTimestamp = eventStream.CommandCreateTimestamp };
-                if (_commandIdManager.IsCommandIdExist(commandInfo))
+                //判断命令是否重复
+                var commandCacheKey = BuildCommandCacheKey(eventStream.CommandCreateTimestamp);
+                if (_commandIndexDict.TryGetValue(commandCacheKey, out ConcurrentDictionary<string, byte> commandIndexDict))
                 {
-                    return EventAppendResult.DuplicateCommand;
+                    if (commandIndexDict.ContainsKey(eventStream.CommandId))
+                    {
+                        return EventAppendResult.DuplicateCommand;
+                    }
                 }
 
                 //判断版本号是否冲突，使用内存中仅保留每个聚合根最新版本的字典来实现
@@ -94,13 +132,14 @@ namespace EStore
                     Version = eventStream.Version,
                     CommandId = eventStream.CommandId,
                     Timestamp = eventStream.Timestamp,
+                    CommandCreateTimestamp = eventStream.CommandCreateTimestamp,
                     Events = eventStream.Events
                 };
                 if (aggregateLatestVersionData != null)
                 {
                     record.PreviousRecordLogPosition = aggregateLatestVersionData.LogPosition;
                 }
-                _chunkWriter.Write(record);
+                _eventDataChunkWriter.Write(record);
 
                 //更新聚合根最新的事件版本
                 if (aggregateLatestVersionData != null)
@@ -118,19 +157,27 @@ namespace EStore
                     _aggregateLatestVersionDict[eventStream.AggregateRootId] = aggregateLatestVersionData;
                 }
 
-                //添加CommandId到命令管理器
-                _commandIdManager.AddCommandId(commandInfo);
+                //添加命令索引到内存字典
+                _commandIndexDict
+                    .GetOrAdd(commandCacheKey, k => new ConcurrentDictionary<string, byte>())
+                    .TryAdd(eventStream.CommandId, 1);
 
-                //更新最近已修改的聚合根ID
-                _changedAggregateQueue.Enqueue(record.AggregateRootId);
+                //添加事件到事件队列，以便进行异步持久化事件索引和命令索引
+                _eventStreamRecordQueue.Enqueue(record);
 
                 return EventAppendResult.Success;
-            }   
+            }
         }
 
-        private void LoadAggregateVersionIndexData()
+        private void LoadIndexData()
         {
-            var chunks = _indexChunkManager.GetAllChunks();
+            Task.Factory.StartNew(LoadEventIndexData);
+            Task.Factory.StartNew(LoadCommandIndexData);
+            _loadIndexWaitHandle.WaitOne();
+        }
+        private void LoadEventIndexData()
+        {
+            var chunks = _eventIndexChunkManager.GetAllChunks();
             var count = 0L;
             var stopWatch = new Stopwatch();
             var totalStopWatch = new Stopwatch();
@@ -143,7 +190,7 @@ namespace EStore
                 var recordQueue = new Queue<IndexRecord>();
                 while (true)
                 {
-                    var record = _indexChunkReader.TryReadAt(dataPosition, ReadIndexRecord, false);
+                    var record = _eventIndexChunkReader.TryReadAt(dataPosition, ReadIndexRecord, false);
                     if (record == null)
                     {
                         break;
@@ -152,14 +199,14 @@ namespace EStore
                     {
                         continue;
                     }
-                    var indexArray = record.IndexInfo.Split(';');
+                    var indexArray = record.IndexInfo.Split(IndexSeparator);
                     foreach (var index in indexArray)
                     {
                         if (string.IsNullOrEmpty(index))
                         {
                             continue;
                         }
-                        var itemArray = index.Split(':');
+                        var itemArray = index.Split(IndexContentSeparator);
                         var aggregateRootId = itemArray[0];
                         _aggregateLatestVersionDict[aggregateRootId] = new AggregateLatestVersionData
                         {
@@ -167,16 +214,83 @@ namespace EStore
                             LogPosition = long.Parse(itemArray[2])
                         };
                         count++;
-                        if (count % 100000 == 0)
+                        if (count % 1000000 == 0)
                         {
-                            _logger.Info(count);
+                            _logger.Info("Event index loaded: " + count);
                         }
                     }
                     dataPosition += record.RecordSize + 4 + 4;
                 }
-                _logger.Info("Chunk read complete, timeSpent: " + stopWatch.Elapsed.TotalSeconds );
+                _logger.Info("Event index chunk read complete, timeSpent: " + stopWatch.Elapsed.TotalSeconds );
             }
-            _logger.Info("Chunk read all complete, total timeSpent: " + totalStopWatch.Elapsed.TotalSeconds);
+            _logger.Info("Event index chunk read all complete, total timeSpent: " + totalStopWatch.Elapsed.TotalSeconds);
+            _isEventIndexLoaded = true;
+            if (_isCommandIndexLoaded)
+            {
+                _loadIndexWaitHandle.Set();
+            }
+        }
+        private void LoadCommandIndexData()
+        {
+            var chunks = _commandIndexChunkManager.GetAllChunks();
+            var count = 0L;
+            var stopWatch = new Stopwatch();
+            var totalStopWatch = new Stopwatch();
+            totalStopWatch.Start();
+            foreach (Chunk chunk in chunks)
+            {
+                stopWatch.Restart();
+                _logger.Info(chunk);
+                var dataPosition = chunk.ChunkHeader.ChunkDataStartPosition;
+                var recordQueue = new Queue<IndexRecord>();
+                while (true)
+                {
+                    var record = _commandIndexChunkReader.TryReadAt(dataPosition, ReadIndexRecord, false);
+                    if (record == null)
+                    {
+                        break;
+                    }
+                    if (string.IsNullOrEmpty(record.IndexInfo))
+                    {
+                        continue;
+                    }
+                    var indexArray = record.IndexInfo.Split(IndexSeparator);
+                    foreach (var index in indexArray)
+                    {
+                        if (string.IsNullOrEmpty(index))
+                        {
+                            continue;
+                        }
+                        var array = index.Split(IndexContentSeparator);
+                        if (array.Length != 3)
+                        {
+                            continue;
+                        }
+                        var commandId = array[0];
+                        var commandCreateTimestamp = long.Parse(array[1]);
+                        var cacheKey = BuildCommandCacheKey(commandCreateTimestamp);
+                        if (!IsCommandIndexExpired(cacheKey))
+                        {
+                            _commandIndexDict
+                                .GetOrAdd(cacheKey, k => new ConcurrentDictionary<string, byte>())
+                                .TryAdd(commandId, 1);
+                            count++;
+                            if (count % 1000000 == 0)
+                            {
+                                _logger.Info("Command index loaded: " + count);
+                            }
+                        }
+                    }
+                    dataPosition += record.RecordSize + 4 + 4;
+                }
+                _logger.Info("Command index chunk read complete, timeSpent: " + stopWatch.Elapsed.TotalSeconds);
+            }
+            _logger.Info("Command index chunk read all complete, total timeSpent: " + totalStopWatch.Elapsed.TotalSeconds);
+            _isCommandIndexLoaded = true;
+            if (_isEventIndexLoaded)
+            {
+                _loadIndexWaitHandle.Set();
+            }
         }
         private EventStreamRecord ReadEventStreamRecord(byte[] recordBuffer)
         {
@@ -190,51 +304,92 @@ namespace EStore
             record.ReadFrom(recordBuffer);
             return record;
         }
-        long totalPersistedIndexCount = 0L;
         private void PersistIndex()
         {
             lock (_lockObj)
             {
-                var tmp = _changedAggregateQueue;
-                _changedAggregateQueue = _swappedAggregateQueue;
-                _swappedAggregateQueue = tmp;
+                var tmp = _eventStreamRecordQueue;
+                _eventStreamRecordQueue = _swapedEventStreamRecordQueue;
+                _swapedEventStreamRecordQueue = tmp;
             }
 
-            var batchSize = 1000;
-            var builder = new StringBuilder();
+            var eventIndexBuilder = new StringBuilder();
+            var commandIndexBuilder = new StringBuilder();
             var count = 0;
-            while (_swappedAggregateQueue.TryDequeue(out string aggregateRootId))
+            while (_swapedEventStreamRecordQueue.TryDequeue(out EventStreamRecord eventStreamRecord))
             {
-                if (!_aggregateLatestVersionDict.TryGetValue(aggregateRootId, out AggregateLatestVersionData aggregateLatestVersionData))
-                {
-                    continue;
-                }
+                eventIndexBuilder.Append(eventStreamRecord.AggregateRootId);
+                eventIndexBuilder.Append(IndexContentSeparator);
+                eventIndexBuilder.Append(eventStreamRecord.Version);
+                eventIndexBuilder.Append(IndexContentSeparator);
+                eventIndexBuilder.Append(eventStreamRecord.Timestamp);
+                eventIndexBuilder.Append(IndexContentSeparator);
+                eventIndexBuilder.Append(eventStreamRecord.LogPosition);
+                eventIndexBuilder.Append(IndexSeparator);
 
-                builder.Append(aggregateRootId);
-                builder.Append(":");
-                builder.Append(aggregateLatestVersionData.Version);
-                builder.Append(":");
-                builder.Append(aggregateLatestVersionData.LogPosition);
-                builder.Append(";");
+                commandIndexBuilder.Append(eventStreamRecord.CommandId);
+                commandIndexBuilder.Append(IndexContentSeparator);
+                commandIndexBuilder.Append(eventStreamRecord.CommandCreateTimestamp);
+                commandIndexBuilder.Append(IndexContentSeparator);
+                commandIndexBuilder.Append(eventStreamRecord.LogPosition);
+                commandIndexBuilder.Append(IndexSeparator);
+
                 count++;
-                totalPersistedIndexCount++;
-                if (count % batchSize == 0)
+
+                if (count % PersistIndexBatchSize == 0)
                 {
-                    _indexChunkWriter.Write(new IndexRecord
+                    _eventIndexChunkWriter.Write(new IndexRecord
                     {
-                        IndexInfo = builder.ToString()
+                        IndexInfo = eventIndexBuilder.ToString()
                     });
-                    builder.Clear();
+                    _commandIndexChunkWriter.Write(new IndexRecord
+                    {
+                        IndexInfo = commandIndexBuilder.ToString()
+                    });
+                    eventIndexBuilder.Clear();
+                    commandIndexBuilder.Clear();
                 }
             }
-            if (builder.Length > 0)
+            if (eventIndexBuilder.Length > 0)
             {
-                _indexChunkWriter.Write(new IndexRecord
+                _eventIndexChunkWriter.Write(new IndexRecord
                 {
-                    IndexInfo = builder.ToString()
+                    IndexInfo = eventIndexBuilder.ToString()
                 });
             }
-            _logger.InfoFormat("Persisted aggregate indexes, count: {0}, totalPersistedIndexCount: {1}", count, totalPersistedIndexCount);
+            if (commandIndexBuilder.Length > 0)
+            {
+                _commandIndexChunkWriter.Write(new IndexRecord
+                {
+                    IndexInfo = commandIndexBuilder.ToString()
+                });
+            }
+        }
+        private void RemoveExpiredCommandIndexes()
+        {
+            _commandIndexDict
+                .Keys
+                .Where(x => IsCommandIndexExpired(x))
+                .ToList()
+                .ForEach(key =>
+                {
+                    if (_commandIndexDict.TryRemove(key, out ConcurrentDictionary<string, byte> value))
+                    {
+                        _logger.InfoFormat("Removed expired command index: timeKey:{0}, commandId count: {1}", key, value.Keys.Count);
+                    }
+                });
+        }
+        /// <summary>生成命令产生时间的时间戳的缓存key，使用时间戳的截止到秒的时间作为缓存key，秒以下的单位的时间全部清零
+        /// </summary>
+        /// <param name="commandCreateTimestamp"></param>
+        /// <returns></returns>
+        private long BuildCommandCacheKey(long commandCreateTimestamp)
+        {
+            return commandCreateTimestamp / 1000000;
+        }
+        private bool IsCommandIndexExpired(long key)
+        {
+            return (DateTime.Now - new DateTime(key * 1000000)).TotalSeconds > MaxCommandIndexCacheTimeSeconds;
         }
 
         class AggregateLatestVersionData
