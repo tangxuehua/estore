@@ -1,9 +1,9 @@
-﻿using System.Threading.Tasks;
+﻿using System.Collections.Generic;
 
 namespace EStore
 {
     public interface IEventStore
     {
-        EventAppendResult AppendEventStream(IEventStream eventStream);
+        EventAppendResult AppendEventStreams(IEnumerable<IEventStream> eventStreams);
     }
 }

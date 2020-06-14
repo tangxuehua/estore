@@ -19,6 +19,7 @@ namespace EStore
         #region Private Variables
 
         private readonly object _lockObj = new object();
+        private readonly long SecondFactor = 10000000L;
         private const char IndexSeparator = ';';
         private const char IndexContentSeparator = ':';
         private const int PersistIndexBatchSize = 1000;
@@ -31,34 +32,43 @@ namespace EStore
         private ChunkManager _commandIndexChunkManager;
         private ChunkWriter _commandIndexChunkWriter;
         private ChunkReader _commandIndexChunkReader;
-        private readonly ConcurrentDictionary<long, ConcurrentDictionary<string, byte>> _commandIndexDict = new ConcurrentDictionary<long, ConcurrentDictionary<string, byte>>();
+        private readonly SortedDictionary<long, ConcurrentDictionary<string, byte>> _commandIndexDict = new SortedDictionary<long, ConcurrentDictionary<string, byte>>();
         private readonly ConcurrentDictionary<string, AggregateLatestVersionData> _aggregateLatestVersionDict = new ConcurrentDictionary<string, AggregateLatestVersionData>();
+        private readonly SortedDictionary<long, ConcurrentDictionary<string, byte>> _aggregateLatestVersionBySecondDict = new SortedDictionary<long, ConcurrentDictionary<string, byte>>();
         private ConcurrentQueue<EventStreamRecord> _eventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
         private ConcurrentQueue<EventStreamRecord> _swapedEventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
+        private readonly ManualResetEvent _loadIndexWaitHandle = new ManualResetEvent(false);
         private readonly IScheduleService _scheduleService;
         private readonly ILogger _logger;
         private bool _isEventIndexLoaded = false;
         private bool _isCommandIndexLoaded = false;
-        private readonly ManualResetEvent _loadIndexWaitHandle = new ManualResetEvent(false);
 
         #endregion
 
         /// <summary>Represents the interval of the persist event index and command index task, the default value is 1 seconds.
         /// </summary>
         public int PersistIndexIntervalMilliseconds { get; set; }
-        /// <summary>Represents the max cache time seconds of the command index, the default value is 3 days.
+        /// <summary>Represents the max cache time seconds of the command index, the default value is 15 days.
         /// </summary>
-        public int MaxCommandIndexCacheTimeSeconds { get; set; }
-        /// <summary>Represents the interval of remove command index task, the default value is 10 seconds.
+        public int CommandIndexMaxCacheSeconds { get; set; }
+        /// <summary>Represents the interval of removing command index task, the default value is 10 seconds.
         /// </summary>
-        public int RemoveExpiredCommandIndexCacheKeyIntervalSeconds { get; set; }
+        public int RemoveExpiredCommandIndexCacheIntervalSeconds { get; set; }
+        /// <summary>Represents the max cache count of the aggregate latest version, the default value is 10000000.
+        /// </summary>
+        public int AggregateLatestVersionMaxCacheCount { get; set; }
+        /// <summary>Represents the interval of removing exceeded aggregate latest version task, the default value is 10 seconds.
+        /// </summary>
+        public int RemoveExceedAggregateLatestVersionCacheIntervalSeconds { get; set; }
 
         public DefaultEventStore(IScheduleService scheduleService, ILoggerFactory loggerFactory)
         {
             _scheduleService = scheduleService;
             PersistIndexIntervalMilliseconds = 1000;
-            RemoveExpiredCommandIndexCacheKeyIntervalSeconds = 10 * 1000;
-            MaxCommandIndexCacheTimeSeconds = 60 * 60 * 24 * 3;
+            RemoveExpiredCommandIndexCacheIntervalSeconds = 10 * 1000;
+            CommandIndexMaxCacheSeconds = 60 * 60 * 24 * 15;
+            AggregateLatestVersionMaxCacheCount = 10000000;
+            RemoveExceedAggregateLatestVersionCacheIntervalSeconds = 10 * 1000;
             _logger = loggerFactory.Create(GetType().FullName);
         }
 
@@ -89,83 +99,70 @@ namespace EStore
         public void Start()
         {
             _scheduleService.StartTask("PersistIndex", PersistIndex, PersistIndexIntervalMilliseconds, PersistIndexIntervalMilliseconds);
-            _scheduleService.StartTask("RemoveExpiredCommandIndexes", RemoveExpiredCommandIndexes, RemoveExpiredCommandIndexCacheKeyIntervalSeconds, RemoveExpiredCommandIndexCacheKeyIntervalSeconds);
+            _scheduleService.StartTask("RemoveExpiredCommandIndexes", RemoveExpiredCommandIndexes, RemoveExpiredCommandIndexCacheIntervalSeconds, RemoveExpiredCommandIndexCacheIntervalSeconds);
+            _scheduleService.StartTask("RemoveExceedAggregates", RemoveExceedAggregateLatestVersion, RemoveExceedAggregateLatestVersionCacheIntervalSeconds, RemoveExceedAggregateLatestVersionCacheIntervalSeconds);
         }
         public void Stop()
         {
+            PersistIndex();
             _scheduleService.StopTask("PersistIndex");
             _scheduleService.StopTask("RemoveExpiredCommandIndexes");
+            _scheduleService.StopTask("RemoveExceedAggregates");
             _eventDataChunkWriter.Close();
+            _eventIndexChunkWriter.Close();
+            _commandIndexChunkWriter.Close();
         }
-        public EventAppendResult AppendEventStream(IEventStream eventStream)
+        public EventAppendResult AppendEventStreams(IEnumerable<IEventStream> eventStreams)
         {
             lock (_lockObj)
             {
-                //判断命令是否重复
-                var commandCacheKey = BuildCommandCacheKey(eventStream.CommandCreateTimestamp);
-                if (_commandIndexDict.TryGetValue(commandCacheKey, out ConcurrentDictionary<string, byte> commandIndexDict))
+                var eventStreamDict = GroupEventStreamByAggregateRoot(eventStreams);
+                var eventAppendResult = new EventAppendResult();
+
+                foreach (var entry in eventStreamDict)
                 {
-                    if (commandIndexDict.ContainsKey(eventStream.CommandId))
+                    var aggregateRootId = entry.Key;
+                    var eventStreamList = entry.Value;
+
+                    //检查当前聚合根的事件是否合法
+                    if (!CheckAggregateEvents(aggregateRootId, eventStreamList, eventAppendResult, out AggregateLatestVersionData aggregateLatestVersionData))
                     {
-                        return EventAppendResult.DuplicateCommand;
+                        continue;
                     }
-                }
 
-                //判断版本号是否冲突，使用内存中仅保留每个聚合根最新版本的字典来实现
-                if (_aggregateLatestVersionDict.TryGetValue(eventStream.AggregateRootId, out AggregateLatestVersionData aggregateLatestVersionData))
-                {
-                    if (eventStream.Version != (aggregateLatestVersionData.Version + 1))
+                    //如果合法，则持久化事件到文件
+                    foreach (var eventStream in eventStreamList)
                     {
-                        return EventAppendResult.InvalidEventVersion;
+                        var record = new EventStreamRecord
+                        {
+                            AggregateRootId = eventStream.AggregateRootId,
+                            AggregateRootType = eventStream.AggregateRootType,
+                            Version = eventStream.Version,
+                            CommandId = eventStream.CommandId,
+                            Timestamp = eventStream.Timestamp,
+                            CommandCreateTimestamp = eventStream.CommandCreateTimestamp,
+                            Events = eventStream.Events
+                        };
+
+                        if (aggregateLatestVersionData != null)
+                        {
+                            record.PreviousRecordLogPosition = aggregateLatestVersionData.LogPosition;
+                        }
+
+                        //写入事件到文件
+                        _eventDataChunkWriter.Write(record);
+                         
+                        //更新聚合根的内存缓存数据
+                        RefreshMemoryCache(aggregateRootId, aggregateLatestVersionData, record);
+
+                        //添加事件到事件队列，以便进行异步持久化事件索引和命令索引
+                        _eventStreamRecordQueue.Enqueue(record);
                     }
-                }
-                else if (eventStream.Version != 1)
-                {
-                    return EventAppendResult.InvalidEventVersion;
+
+                    eventAppendResult.SuccessAggregateRootIdList.Add(aggregateRootId);
                 }
 
-                //写入eventStream到文件
-                var record = new EventStreamRecord
-                {
-                    AggregateRootId = eventStream.AggregateRootId,
-                    AggregateRootType = eventStream.AggregateRootType,
-                    Version = eventStream.Version,
-                    CommandId = eventStream.CommandId,
-                    Timestamp = eventStream.Timestamp,
-                    CommandCreateTimestamp = eventStream.CommandCreateTimestamp,
-                    Events = eventStream.Events
-                };
-                if (aggregateLatestVersionData != null)
-                {
-                    record.PreviousRecordLogPosition = aggregateLatestVersionData.LogPosition;
-                }
-                _eventDataChunkWriter.Write(record);
-
-                //更新聚合根最新的事件版本
-                if (aggregateLatestVersionData != null)
-                {
-                    aggregateLatestVersionData.Version = record.Version;
-                    aggregateLatestVersionData.LogPosition = record.LogPosition;
-                }
-                else
-                {
-                    aggregateLatestVersionData = new AggregateLatestVersionData
-                    {
-                        Version = record.Version,
-                        LogPosition = record.LogPosition
-                    };
-                    _aggregateLatestVersionDict[eventStream.AggregateRootId] = aggregateLatestVersionData;
-                }
-
-                //添加命令索引到内存字典
-                _commandIndexDict
-                    .GetOrAdd(commandCacheKey, k => new ConcurrentDictionary<string, byte>())
-                    .TryAdd(eventStream.CommandId, 1);
-
-                //添加事件到事件队列，以便进行异步持久化事件索引和命令索引
-                _eventStreamRecordQueue.Enqueue(record);
-
-                return EventAppendResult.Success;
+                return eventAppendResult;
             }
         }
 
@@ -185,7 +182,7 @@ namespace EStore
             foreach (Chunk chunk in chunks)
             {
                 stopWatch.Restart();
-                _logger.Info(chunk);
+                _logger.Info(chunk.ToString());
                 var dataPosition = chunk.ChunkHeader.ChunkDataStartPosition;
                 var recordQueue = new Queue<IndexRecord>();
                 while (true)
@@ -208,11 +205,7 @@ namespace EStore
                         }
                         var itemArray = index.Split(IndexContentSeparator);
                         var aggregateRootId = itemArray[0];
-                        _aggregateLatestVersionDict[aggregateRootId] = new AggregateLatestVersionData
-                        {
-                            Version = int.Parse(itemArray[1]),
-                            LogPosition = long.Parse(itemArray[2])
-                        };
+                        _aggregateLatestVersionDict[aggregateRootId] = new AggregateLatestVersionData(long.Parse(itemArray[2]), int.Parse(itemArray[1]));
                         count++;
                         if (count % 1000000 == 0)
                         {
@@ -223,6 +216,9 @@ namespace EStore
                 }
                 _logger.Info("Event index chunk read complete, timeSpent: " + stopWatch.Elapsed.TotalSeconds );
             }
+
+            //检查是否有漏掉的索引没有加载，TODO
+
             _logger.Info("Event index chunk read all complete, total timeSpent: " + totalStopWatch.Elapsed.TotalSeconds);
             _isEventIndexLoaded = true;
             if (_isCommandIndexLoaded)
@@ -240,7 +236,7 @@ namespace EStore
             foreach (Chunk chunk in chunks)
             {
                 stopWatch.Restart();
-                _logger.Info(chunk);
+                _logger.Info(chunk.ToString());
                 var dataPosition = chunk.ChunkHeader.ChunkDataStartPosition;
                 var recordQueue = new Queue<IndexRecord>();
                 while (true)
@@ -268,7 +264,7 @@ namespace EStore
                         }
                         var commandId = array[0];
                         var commandCreateTimestamp = long.Parse(array[1]);
-                        var cacheKey = BuildCommandCacheKey(commandCreateTimestamp);
+                        var cacheKey = BuildSecondCacheKey(commandCreateTimestamp);
                         if (!IsCommandIndexExpired(cacheKey))
                         {
                             _commandIndexDict
@@ -285,6 +281,9 @@ namespace EStore
                 }
                 _logger.Info("Command index chunk read complete, timeSpent: " + stopWatch.Elapsed.TotalSeconds);
             }
+
+            //检查是否有漏掉的索引没有加载，TODO
+
             _logger.Info("Command index chunk read all complete, total timeSpent: " + totalStopWatch.Elapsed.TotalSeconds);
             _isCommandIndexLoaded = true;
             if (_isEventIndexLoaded)
@@ -367,35 +366,278 @@ namespace EStore
         }
         private void RemoveExpiredCommandIndexes()
         {
-            _commandIndexDict
-                .Keys
-                .Where(x => IsCommandIndexExpired(x))
-                .ToList()
-                .ForEach(key =>
+            var toRemovePairList = new List<KeyValuePair<long, ConcurrentDictionary<string, byte>>>();
+            foreach (var entry in _commandIndexDict)
+            {
+                if (IsCommandIndexExpired(entry.Key))
                 {
-                    if (_commandIndexDict.TryRemove(key, out ConcurrentDictionary<string, byte> value))
-                    {
-                        _logger.InfoFormat("Removed expired command index: timeKey:{0}, commandId count: {1}", key, value.Keys.Count);
-                    }
-                });
+                    toRemovePairList.Add(entry);
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            if (toRemovePairList.Count == 0)
+            {
+                return;
+            }
+
+            var firstPair = toRemovePairList.First();
+            var lastPair = toRemovePairList.Last();
+            var removedCommandCount = 0;
+            foreach (var pair in toRemovePairList)
+            {
+                if (_commandIndexDict.Remove(pair.Key))
+                {
+                    removedCommandCount += pair.Value.Count;
+                }
+            }
+
+            _logger.InfoFormat("Removed commandCacheCount: {0}, firstTimeKey: {1}, lastTimeKey: {2}", removedCommandCount, firstPair.Key, lastPair.Key);
         }
-        /// <summary>生成命令产生时间的时间戳的缓存key，使用时间戳的截止到秒的时间作为缓存key，秒以下的单位的时间全部清零
-        /// </summary>
-        /// <param name="commandCreateTimestamp"></param>
-        /// <returns></returns>
-        private long BuildCommandCacheKey(long commandCreateTimestamp)
+        private void RemoveExceedAggregateLatestVersion()
         {
-            return commandCreateTimestamp / 1000000;
+            var exceedCount = _aggregateLatestVersionDict.Count - AggregateLatestVersionMaxCacheCount;
+            if (exceedCount <= 0)
+            {
+                return;
+            }
+
+            var toRemoveAggregateCount = 0;
+            var toRemovePairList = new List<KeyValuePair<long, ConcurrentDictionary<string, byte>>>();
+            foreach (var entry in _aggregateLatestVersionBySecondDict)
+            {
+                toRemovePairList.Add(entry);
+                toRemoveAggregateCount += entry.Value.Count;
+                if (toRemoveAggregateCount >= exceedCount)
+                {
+                    break;
+                }
+            }
+
+            var removedAggregateCount = 0;
+            foreach (var pair in toRemovePairList)
+            {
+                _aggregateLatestVersionBySecondDict.Remove(pair.Key);
+                foreach (var aggregateRootId in pair.Value.Keys)
+                {
+                    if (_aggregateLatestVersionDict.TryRemove(aggregateRootId, out AggregateLatestVersionData removed))
+                    {
+                        removedAggregateCount++;
+                    }
+                }
+            }
+
+            _logger.InfoFormat("Removed aggregateCacheCount: {0}, remainingCount: {1}", removedAggregateCount, _aggregateLatestVersionDict.Count);
+        }
+        private IDictionary<string, IList<IEventStream>> GroupEventStreamByAggregateRoot(IEnumerable<IEventStream> eventStreams)
+        {
+            var eventStreamDict = new Dictionary<string, IList<IEventStream>>();
+            var aggregateRootIdList = eventStreams.Select(x => x.AggregateRootId).Distinct().ToList();
+            foreach (var aggregateRootId in aggregateRootIdList)
+            {
+                var eventStreamList = eventStreams.Where(x => x.AggregateRootId == aggregateRootId).ToList();
+                if (eventStreamList.Count > 0)
+                {
+                    eventStreamDict.Add(aggregateRootId, eventStreamList);
+                }
+            }
+            return eventStreamDict;
         }
         private bool IsCommandIndexExpired(long key)
         {
-            return (DateTime.Now - new DateTime(key * 1000000)).TotalSeconds > MaxCommandIndexCacheTimeSeconds;
+            return (DateTime.Now - new DateTime(key * SecondFactor)).TotalSeconds > CommandIndexMaxCacheSeconds;
+        }
+        private bool CheckAggregateEvents(string aggregateRootId, IList<IEventStream> eventStreamList, EventAppendResult eventAppendResult, out AggregateLatestVersionData aggregateLatestVersionData)
+        {
+            aggregateLatestVersionData = null;
+
+            //检查版本号是否连续
+            if (!IsEventStreamVersionSequential(aggregateRootId, eventStreamList))
+            {
+                eventAppendResult.DuplicateEventAggregateRootIdList.Add(aggregateRootId);
+                return false;
+            }
+
+            //检查命令是否重复
+            var duplicatedCommandIdList = CheckDuplicatedCommands(aggregateRootId, eventStreamList);
+            if (duplicatedCommandIdList.Count > 0)
+            {
+                eventAppendResult.DuplicateCommandAggregateRootIdList.Add(aggregateRootId, duplicatedCommandIdList);
+                return false;
+            }
+
+            //检查版本号是否是基于当前聚合根最新的版本号而进行的修改
+            if (!CheckAggregateRootLatestVersionMatch(aggregateRootId, eventStreamList.First().Version, out aggregateLatestVersionData))
+            {
+                eventAppendResult.DuplicateEventAggregateRootIdList.Add(aggregateRootId);
+                return false;
+            }
+
+            return true;
+        }
+        private bool IsEventStreamVersionSequential(string aggregateRootId, IList<IEventStream> eventStreamList)
+        {
+            if (eventStreamList.Count <= 1)
+            {
+                return true;
+            }
+            for(var i = 0; i < eventStreamList.Count - 1; i++)
+            {
+                var version1 = eventStreamList[i].Version;
+                var version2 = eventStreamList[i + 1].Version;
+                if (version1 + 1 != version2)
+                {
+                    _logger.ErrorFormat("Aggregate event version sequential wrong，aggregateRootId: {0}, versionPrevious: {1}, versionNext: {2}",
+                        aggregateRootId,
+                        version1,
+                        version2);
+                    return false;
+                }
+            }
+            return true;
+        }
+        private bool CheckAggregateRootLatestVersionMatch(string aggregateRootId, long firstInputEventVersion, out AggregateLatestVersionData aggregateLatestVersionData)
+        {
+            aggregateLatestVersionData = GetAggregateRootLatestVersionData(aggregateRootId);
+            if (aggregateLatestVersionData != null)
+            {
+                if (aggregateLatestVersionData.Version + 1 != firstInputEventVersion)
+                {
+                    return false;
+                }
+            }
+            else if (firstInputEventVersion != 1)
+            {
+                return false;
+            }
+            return true;
+        }
+        private AggregateLatestVersionData GetAggregateRootLatestVersionData(string aggregateRootId)
+        {
+            if (_aggregateLatestVersionDict.TryGetValue(aggregateRootId, out AggregateLatestVersionData aggregateLatestVersionData))
+            {
+                return aggregateLatestVersionData;
+            }
+            var aggregateLatestVersionDataFromFile = LoadAggregateRootLatestVersionDataFromDisk(aggregateRootId);
+            if (aggregateLatestVersionDataFromFile != null)
+            {
+                return _aggregateLatestVersionDict.GetOrAdd(aggregateRootId, aggregateLatestVersionDataFromFile);
+            }
+            return null;
+        }
+        private void UpdateAggregateByTimeDictCache(string aggregateRootId, AggregateLatestVersionData aggregateLatestVersionData)
+        {
+            var oldKey = BuildSecondCacheKey(aggregateLatestVersionData.LastActiveTime.Ticks);
+            var newKey = BuildSecondCacheKey(DateTime.Now.Ticks);
+
+            //先从旧时间戳的Dict缓存中移除aggregateRootId
+            if (_aggregateLatestVersionBySecondDict.TryGetValue(oldKey, out ConcurrentDictionary<string, byte> versionDict1))
+            {
+                versionDict1.TryRemove(aggregateRootId, out byte removed);
+            }
+
+            //再将aggregateRootId添加到新时间戳的Dict缓存下
+            if (_aggregateLatestVersionBySecondDict.TryGetValue(newKey, out ConcurrentDictionary<string, byte> versionDict2))
+            {
+                versionDict2.TryAdd(aggregateRootId, 1);
+            }
+            else
+            {
+                var versionDict = new ConcurrentDictionary<string, byte>();
+                versionDict.TryAdd(aggregateRootId, 1);
+                _aggregateLatestVersionBySecondDict.Add(newKey, versionDict);
+            }
+        }
+        private AggregateLatestVersionData LoadAggregateRootLatestVersionDataFromDisk(string aggregateRootId)
+        {
+            //TODO
+            return null;
+        }
+        private IList<string> CheckDuplicatedCommands(string aggregateRootId, IList<IEventStream> eventStreamList)
+        {
+            var duplicatedCommandIdList = new List<string>();
+            foreach(var eventStream in eventStreamList)
+            {
+                if (IsCommandDuplicated(eventStream))
+                {
+                    duplicatedCommandIdList.Add(eventStream.CommandId);
+                }
+            }
+            return duplicatedCommandIdList;
+        }
+        private bool IsCommandDuplicated(IEventStream eventStream)
+        {
+            var commandCacheKey = BuildSecondCacheKey(eventStream.CommandCreateTimestamp);
+            if (_commandIndexDict.TryGetValue(commandCacheKey, out ConcurrentDictionary<string, byte> commandIndexDict))
+            {
+                if (commandIndexDict.ContainsKey(eventStream.CommandId))
+                {
+                    return true;
+                }
+            }
+            else if (IsCommandIndexExpired(commandCacheKey) && IsCommandExistOnDisk(eventStream))
+            {
+                return true;
+            }
+            return false;
+        }
+        private bool IsCommandExistOnDisk(IEventStream eventStream)
+        {
+            //TODO
+            return false;
+        }
+        private void RefreshMemoryCache(string aggregateRootId, AggregateLatestVersionData aggregateLatestVersionData, EventStreamRecord record)
+        {
+            //更新聚合根在本地内存存储的最新的事件版本
+            if (aggregateLatestVersionData != null)
+            {
+                aggregateLatestVersionData.Update(record.LogPosition, record.Version);
+                UpdateAggregateByTimeDictCache(aggregateRootId, aggregateLatestVersionData);
+            }
+            else
+            {
+                var newAggregateLatestVersionData = new AggregateLatestVersionData(record.LogPosition, record.Version);
+                _aggregateLatestVersionDict.TryAdd(record.AggregateRootId, newAggregateLatestVersionData);
+                UpdateAggregateByTimeDictCache(aggregateRootId, newAggregateLatestVersionData);
+            }
+
+            //添加命令索引到内存字典
+            var commandCacheKey = BuildSecondCacheKey(record.CommandCreateTimestamp);
+            _commandIndexDict
+                .GetOrAdd(commandCacheKey, k => new ConcurrentDictionary<string, byte>())
+                .TryAdd(record.CommandId, 1);
+        }
+        /// <summary>生产一个基于时间戳的缓存key，使用时间戳的截止到秒的时间作为缓存key，秒以下的单位的时间全部清零
+        /// </summary>
+        /// <param name="timestamp"></param>
+        /// <returns></returns>
+        private long BuildSecondCacheKey(long timestamp)
+        {
+            return timestamp / SecondFactor;
         }
 
         class AggregateLatestVersionData
         {
-            public long LogPosition { get; set; }
-            public int Version { get; set; }
+            public long LogPosition { get; private set; }
+            public int Version { get; private set; }
+            public DateTime LastActiveTime { get; private set; }
+
+            public AggregateLatestVersionData(long logPosition, int version)
+            {
+                LogPosition = logPosition;
+                Version = version;
+                LastActiveTime = DateTime.Now;
+            }
+
+            public void Update(long logPosition, int version)
+            {
+                LogPosition = logPosition;
+                Version = version;
+                LastActiveTime = DateTime.Now;
+            }
         }
         class EventStreamRecord : ILogRecord
         {

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -112,15 +113,7 @@ namespace EStoreSample
             eventStore.Init(eventDataChunkConfig, eventIndexChunkConfig, commandIndexChunkConfig);
             eventStore.Start();
 
-            var eventStream = new TestEventStream
-            {
-                AggregateRootId = ObjectId.GenerateNewStringId(),
-                AggregateRootType = "Note",
-                Events = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
-                Timestamp = DateTime.UtcNow.Ticks
-            };
-
-            var totalCount = 10000000;
+            var totalCount = 100000000;
             var count = 0;
             var performanceService = ObjectContainer.Resolve<IPerformanceService>();
             performanceService.Initialize("WriteChunk").Start();
@@ -131,17 +124,30 @@ namespace EStoreSample
                 {
                     try
                     {
-                        var current = Interlocked.Increment(ref count);
+                        var start = DateTime.Now;
+                        var current = 0;
+                        var eventStreamList = new List<IEventStream>();
+                        for (var i = 0; i < 10; i++)
+                        {
+                            current = Interlocked.Increment(ref count);
+                            var eventStream = new TestEventStream
+                            {
+                                AggregateRootId = "123456789012345678901234",
+                                AggregateRootType = "Note",
+                                Events = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                                Timestamp = DateTime.UtcNow.Ticks,
+                                Version = current,
+                                CommandId = ObjectId.GenerateNewStringId(),
+                                CommandCreateTimestamp = DateTime.Now.Ticks
+                            };
+                            eventStreamList.Add(eventStream);
+                            performanceService.IncrementKeyCount("default", (DateTime.Now - start).TotalMilliseconds);
+                        }
+                        eventStore.AppendEventStreams(eventStreamList);
                         if (current > totalCount)
                         {
                             break;
                         }
-                        var start = DateTime.Now;
-                        eventStream.Version = current;
-                        eventStream.CommandId = ObjectId.GenerateNewStringId();
-                        eventStream.CommandCreateTimestamp = DateTime.Now.Ticks;
-                        eventStore.AppendEventStream(eventStream);
-                        performanceService.IncrementKeyCount("default", (DateTime.Now - start).TotalMilliseconds);
                     }
                     catch (Exception ex)
                     {
