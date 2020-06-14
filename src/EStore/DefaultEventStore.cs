@@ -32,9 +32,8 @@ namespace EStore
         private ChunkManager _commandIndexChunkManager;
         private ChunkWriter _commandIndexChunkWriter;
         private ChunkReader _commandIndexChunkReader;
-        private readonly SortedDictionary<long, ConcurrentDictionary<string, byte>> _commandIndexDict = new SortedDictionary<long, ConcurrentDictionary<string, byte>>();
-        private readonly ConcurrentDictionary<string, AggregateLatestVersionData> _aggregateLatestVersionDict = new ConcurrentDictionary<string, AggregateLatestVersionData>();
-        private readonly SortedDictionary<long, ConcurrentDictionary<string, byte>> _aggregateLatestVersionBySecondDict = new SortedDictionary<long, ConcurrentDictionary<string, byte>>();
+        private CacheDict<string, CommandIndexData> _commandIndexDict;
+        private CacheDict<string, AggregateLatestVersionData> _aggregateIndexDict;
         private ConcurrentQueue<EventStreamRecord> _eventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
         private ConcurrentQueue<EventStreamRecord> _swapedEventStreamRecordQueue = new ConcurrentQueue<EventStreamRecord>();
         private readonly ManualResetEvent _loadIndexWaitHandle = new ManualResetEvent(false);
@@ -48,28 +47,30 @@ namespace EStore
         /// <summary>Represents the interval of the persist event index and command index task, the default value is 1 seconds.
         /// </summary>
         public int PersistIndexIntervalMilliseconds { get; set; }
-        /// <summary>Represents the max cache time seconds of the command index, the default value is 15 days.
+        /// <summary>Represents the max cache count of commandIndex, the default value is 10000000.
         /// </summary>
-        public int CommandIndexMaxCacheSeconds { get; set; }
-        /// <summary>Represents the interval of removing command index task, the default value is 10 seconds.
+        public int CommandIndexMaxCacheCount { get; set; }
+        /// <summary>Represents the interval of removing commandIndex task, the default value is 10 seconds.
         /// </summary>
-        public int RemoveExpiredCommandIndexCacheIntervalSeconds { get; set; }
-        /// <summary>Represents the max cache count of the aggregate latest version, the default value is 10000000.
+        public int RemoveExceedCommandIndexCacheIntervalSeconds { get; set; }
+        /// <summary>Represents the max cache count of aggregateIndex, the default value is 10000000.
         /// </summary>
-        public int AggregateLatestVersionMaxCacheCount { get; set; }
-        /// <summary>Represents the interval of removing exceeded aggregate latest version task, the default value is 10 seconds.
+        public int AggregateIndexMaxCacheCount { get; set; }
+        /// <summary>Represents the interval of removing aggregateIndex task, the default value is 10 seconds.
         /// </summary>
-        public int RemoveExceedAggregateLatestVersionCacheIntervalSeconds { get; set; }
+        public int RemoveExceedAggregateIndexCacheIntervalSeconds { get; set; }
 
         public DefaultEventStore(IScheduleService scheduleService, ILoggerFactory loggerFactory)
         {
             _scheduleService = scheduleService;
             PersistIndexIntervalMilliseconds = 1000;
-            RemoveExpiredCommandIndexCacheIntervalSeconds = 10 * 1000;
-            CommandIndexMaxCacheSeconds = 60 * 60 * 24 * 15;
-            AggregateLatestVersionMaxCacheCount = 10000000;
-            RemoveExceedAggregateLatestVersionCacheIntervalSeconds = 10 * 1000;
+            CommandIndexMaxCacheCount = 10000000;
+            AggregateIndexMaxCacheCount = 10000000;
+            RemoveExceedCommandIndexCacheIntervalSeconds = 10 * 1000;
+            RemoveExceedAggregateIndexCacheIntervalSeconds = 10 * 1000;
             _logger = loggerFactory.Create(GetType().FullName);
+            _commandIndexDict = new CacheDict<string, CommandIndexData>("CommandIndex", _logger, CommandIndexMaxCacheCount);
+            _aggregateIndexDict = new CacheDict<string, AggregateLatestVersionData>("AggregateIndex", _logger, AggregateIndexMaxCacheCount);
         }
 
         public void Init(ChunkManagerConfig eventDataChunkConfig, ChunkManagerConfig eventIndexChunkConfig, ChunkManagerConfig commandIndexChunkConfig)
@@ -99,8 +100,8 @@ namespace EStore
         public void Start()
         {
             _scheduleService.StartTask("PersistIndex", PersistIndex, PersistIndexIntervalMilliseconds, PersistIndexIntervalMilliseconds);
-            _scheduleService.StartTask("RemoveExpiredCommandIndexes", RemoveExpiredCommandIndexes, RemoveExpiredCommandIndexCacheIntervalSeconds, RemoveExpiredCommandIndexCacheIntervalSeconds);
-            _scheduleService.StartTask("RemoveExceedAggregates", RemoveExceedAggregateLatestVersion, RemoveExceedAggregateLatestVersionCacheIntervalSeconds, RemoveExceedAggregateLatestVersionCacheIntervalSeconds);
+            _scheduleService.StartTask("RemoveExpiredCommandIndexes", RemoveExpiredCommandIndexes, RemoveExceedCommandIndexCacheIntervalSeconds, RemoveExceedCommandIndexCacheIntervalSeconds);
+            _scheduleService.StartTask("RemoveExceedAggregates", RemoveExceedAggregateIndexes, RemoveExceedAggregateIndexCacheIntervalSeconds, RemoveExceedAggregateIndexCacheIntervalSeconds);
         }
         public void Stop()
         {
@@ -205,7 +206,7 @@ namespace EStore
                         }
                         var itemArray = index.Split(IndexContentSeparator);
                         var aggregateRootId = itemArray[0];
-                        _aggregateLatestVersionDict[aggregateRootId] = new AggregateLatestVersionData(long.Parse(itemArray[2]), int.Parse(itemArray[1]));
+                        _aggregateIndexDict[aggregateRootId] = new AggregateLatestVersionData(long.Parse(itemArray[2]), int.Parse(itemArray[1]));
                         count++;
                         if (count % 1000000 == 0)
                         {
@@ -366,71 +367,11 @@ namespace EStore
         }
         private void RemoveExpiredCommandIndexes()
         {
-            var toRemovePairList = new List<KeyValuePair<long, ConcurrentDictionary<string, byte>>>();
-            foreach (var entry in _commandIndexDict)
-            {
-                if (IsCommandIndexExpired(entry.Key))
-                {
-                    toRemovePairList.Add(entry);
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            if (toRemovePairList.Count == 0)
-            {
-                return;
-            }
-
-            var firstPair = toRemovePairList.First();
-            var lastPair = toRemovePairList.Last();
-            var removedCommandCount = 0;
-            foreach (var pair in toRemovePairList)
-            {
-                if (_commandIndexDict.Remove(pair.Key))
-                {
-                    removedCommandCount += pair.Value.Count;
-                }
-            }
-
-            _logger.InfoFormat("Removed commandCacheCount: {0}, firstTimeKey: {1}, lastTimeKey: {2}", removedCommandCount, firstPair.Key, lastPair.Key);
+            _commandIndexDict.RemoveExceedKeys();
         }
-        private void RemoveExceedAggregateLatestVersion()
+        private void RemoveExceedAggregateIndexes()
         {
-            var exceedCount = _aggregateLatestVersionDict.Count - AggregateLatestVersionMaxCacheCount;
-            if (exceedCount <= 0)
-            {
-                return;
-            }
-
-            var toRemoveAggregateCount = 0;
-            var toRemovePairList = new List<KeyValuePair<long, ConcurrentDictionary<string, byte>>>();
-            foreach (var entry in _aggregateLatestVersionBySecondDict)
-            {
-                toRemovePairList.Add(entry);
-                toRemoveAggregateCount += entry.Value.Count;
-                if (toRemoveAggregateCount >= exceedCount)
-                {
-                    break;
-                }
-            }
-
-            var removedAggregateCount = 0;
-            foreach (var pair in toRemovePairList)
-            {
-                _aggregateLatestVersionBySecondDict.Remove(pair.Key);
-                foreach (var aggregateRootId in pair.Value.Keys)
-                {
-                    if (_aggregateLatestVersionDict.TryRemove(aggregateRootId, out AggregateLatestVersionData removed))
-                    {
-                        removedAggregateCount++;
-                    }
-                }
-            }
-
-            _logger.InfoFormat("Removed aggregateCacheCount: {0}, remainingCount: {1}", removedAggregateCount, _aggregateLatestVersionDict.Count);
+            _aggregateIndexDict.RemoveExceedKeys();
         }
         private IDictionary<string, IList<IEventStream>> GroupEventStreamByAggregateRoot(IEnumerable<IEventStream> eventStreams)
         {
@@ -445,10 +386,6 @@ namespace EStore
                 }
             }
             return eventStreamDict;
-        }
-        private bool IsCommandIndexExpired(long key)
-        {
-            return (DateTime.Now - new DateTime(key * SecondFactor)).TotalSeconds > CommandIndexMaxCacheSeconds;
         }
         private bool CheckAggregateEvents(string aggregateRootId, IList<IEventStream> eventStreamList, EventAppendResult eventAppendResult, out AggregateLatestVersionData aggregateLatestVersionData)
         {
@@ -517,39 +454,17 @@ namespace EStore
         }
         private AggregateLatestVersionData GetAggregateRootLatestVersionData(string aggregateRootId)
         {
-            if (_aggregateLatestVersionDict.TryGetValue(aggregateRootId, out AggregateLatestVersionData aggregateLatestVersionData))
+            var aggregateLatestVersionData = _aggregateIndexDict.Get(aggregateRootId);
+            if (aggregateLatestVersionData != null)
             {
                 return aggregateLatestVersionData;
             }
             var aggregateLatestVersionDataFromFile = LoadAggregateRootLatestVersionDataFromDisk(aggregateRootId);
             if (aggregateLatestVersionDataFromFile != null)
             {
-                return _aggregateLatestVersionDict.GetOrAdd(aggregateRootId, aggregateLatestVersionDataFromFile);
+                return _aggregateIndexDict.Add(aggregateRootId, aggregateLatestVersionDataFromFile);
             }
             return null;
-        }
-        private void UpdateAggregateByTimeDictCache(string aggregateRootId, AggregateLatestVersionData aggregateLatestVersionData)
-        {
-            var oldKey = BuildSecondCacheKey(aggregateLatestVersionData.LastActiveTime.Ticks);
-            var newKey = BuildSecondCacheKey(DateTime.Now.Ticks);
-
-            //先从旧时间戳的Dict缓存中移除aggregateRootId
-            if (_aggregateLatestVersionBySecondDict.TryGetValue(oldKey, out ConcurrentDictionary<string, byte> versionDict1))
-            {
-                versionDict1.TryRemove(aggregateRootId, out byte removed);
-            }
-
-            //再将aggregateRootId添加到新时间戳的Dict缓存下
-            if (_aggregateLatestVersionBySecondDict.TryGetValue(newKey, out ConcurrentDictionary<string, byte> versionDict2))
-            {
-                versionDict2.TryAdd(aggregateRootId, 1);
-            }
-            else
-            {
-                var versionDict = new ConcurrentDictionary<string, byte>();
-                versionDict.TryAdd(aggregateRootId, 1);
-                _aggregateLatestVersionBySecondDict.Add(newKey, versionDict);
-            }
         }
         private AggregateLatestVersionData LoadAggregateRootLatestVersionDataFromDisk(string aggregateRootId)
         {
@@ -570,15 +485,11 @@ namespace EStore
         }
         private bool IsCommandDuplicated(IEventStream eventStream)
         {
-            var commandCacheKey = BuildSecondCacheKey(eventStream.CommandCreateTimestamp);
-            if (_commandIndexDict.TryGetValue(commandCacheKey, out ConcurrentDictionary<string, byte> commandIndexDict))
+            if (_commandIndexDict.Exist(eventStream.CommandId))
             {
-                if (commandIndexDict.ContainsKey(eventStream.CommandId))
-                {
-                    return true;
-                }
+                return true;
             }
-            else if (IsCommandIndexExpired(commandCacheKey) && IsCommandExistOnDisk(eventStream))
+            else if (IsCommandExistOnDisk(eventStream))
             {
                 return true;
             }
@@ -591,52 +502,48 @@ namespace EStore
         }
         private void RefreshMemoryCache(string aggregateRootId, AggregateLatestVersionData aggregateLatestVersionData, EventStreamRecord record)
         {
-            //更新聚合根在本地内存存储的最新的事件版本
             if (aggregateLatestVersionData != null)
             {
                 aggregateLatestVersionData.Update(record.LogPosition, record.Version);
-                UpdateAggregateByTimeDictCache(aggregateRootId, aggregateLatestVersionData);
+                _aggregateIndexDict.UpdateTimeDict(aggregateRootId, aggregateLatestVersionData);
             }
             else
             {
                 var newAggregateLatestVersionData = new AggregateLatestVersionData(record.LogPosition, record.Version);
-                _aggregateLatestVersionDict.TryAdd(record.AggregateRootId, newAggregateLatestVersionData);
-                UpdateAggregateByTimeDictCache(aggregateRootId, newAggregateLatestVersionData);
+                _aggregateIndexDict.Add(aggregateRootId, newAggregateLatestVersionData);
+                _aggregateIndexDict.UpdateTimeDict(aggregateRootId, newAggregateLatestVersionData);
             }
 
-            //添加命令索引到内存字典
-            var commandCacheKey = BuildSecondCacheKey(record.CommandCreateTimestamp);
-            _commandIndexDict
-                .GetOrAdd(commandCacheKey, k => new ConcurrentDictionary<string, byte>())
-                .TryAdd(record.CommandId, 1);
-        }
-        /// <summary>生产一个基于时间戳的缓存key，使用时间戳的截止到秒的时间作为缓存key，秒以下的单位的时间全部清零
-        /// </summary>
-        /// <param name="timestamp"></param>
-        /// <returns></returns>
-        private long BuildSecondCacheKey(long timestamp)
-        {
-            return timestamp / SecondFactor;
+            _commandIndexDict.AddToTimeDict(record.CommandId, new CommandIndexData(record.CommandCreateTimestamp));
         }
 
-        class AggregateLatestVersionData
+        class AggregateLatestVersionData : ITimeValue
         {
             public long LogPosition { get; private set; }
             public int Version { get; private set; }
-            public DateTime LastActiveTime { get; private set; }
+            public long LastActiveTimestamp { get; private set; }
 
             public AggregateLatestVersionData(long logPosition, int version)
             {
                 LogPosition = logPosition;
                 Version = version;
-                LastActiveTime = DateTime.Now;
+                LastActiveTimestamp = DateTime.Now.Ticks;
             }
 
             public void Update(long logPosition, int version)
             {
                 LogPosition = logPosition;
                 Version = version;
-                LastActiveTime = DateTime.Now;
+                LastActiveTimestamp = DateTime.Now.Ticks;
+            }
+        }
+        class CommandIndexData : ITimeValue
+        {
+            public long LastActiveTimestamp { get; private set; }
+
+            public CommandIndexData(long commandTimestamp)
+            {
+                LastActiveTimestamp = commandTimestamp;
             }
         }
         class EventStreamRecord : ILogRecord
