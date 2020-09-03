@@ -1,11 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.27703.2042
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30204.135
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "EStore", "src\EStore\EStore.csproj", "{81216B52-86D8-48BB-8807-0E1DEBF78BF1}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EStoreSample", "src\EStoreSample\EStoreSample.csproj", "{318482C3-14BE-488A-ADA2-F03D5E8C5B5C}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ECommon", "..\ecommon\src\ECommon\ECommon.csproj", "{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -31,6 +33,14 @@ Global
 		{318482C3-14BE-488A-ADA2-F03D5E8C5B5C}.Release|Any CPU.Build.0 = Release|Any CPU
 		{318482C3-14BE-488A-ADA2-F03D5E8C5B5C}.Release|x64.ActiveCfg = Release|x64
 		{318482C3-14BE-488A-ADA2-F03D5E8C5B5C}.Release|x64.Build.0 = Release|x64
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Debug|x64.Build.0 = Debug|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Release|x64.ActiveCfg = Release|Any CPU
+		{BD8FC218-98D7-4CCC-8F7A-D98D969FB19E}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

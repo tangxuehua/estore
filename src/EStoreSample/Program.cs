@@ -31,12 +31,65 @@ namespace EStoreSample
                 .RegisterEStoreComponents()
                 .BuildContainer();
 
+            var eventStore = InitEventStore();
+
+            var totalCount = 100000000;
+            var index = 0;
+            var performanceService = ObjectContainer.Resolve<IPerformanceService>();
+            performanceService.Initialize("WriteChunk").Start();
+            var aggregateRootId = ObjectId.GenerateNewStringId();
+            var aggregateRootType = "Note";
+            var events = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
+
+            Task.Factory.StartNew(() =>
+            {
+                while (true)
+                {
+                    try
+                    {
+                        var start = DateTime.Now;
+                        var currentVersion = 0;
+                        var eventStreamList = new List<IEventStream>();
+                        for (var i = 0; i < 5; i++)
+                        {
+                            currentVersion = Interlocked.Increment(ref index);
+                            var eventStream = new TestEventStream
+                            {
+                                AggregateRootId = aggregateRootId,
+                                AggregateRootType = aggregateRootType,
+                                Events = events,
+                                Timestamp = DateTime.UtcNow.Ticks,
+                                Version = currentVersion,
+                                CommandId = ObjectId.GenerateNewStringId(),
+                                CommandCreateTimestamp = DateTime.Now.Ticks
+                            };
+                            eventStreamList.Add(eventStream);
+                            performanceService.IncrementKeyCount("default", (DateTime.Now - start).TotalMilliseconds);
+                        }
+                        eventStore.AppendEventStreams(eventStreamList);
+                        if (index > totalCount)
+                        {
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                    }
+                }
+            });
+
+            Console.ReadLine();
+            eventStore.Stop();
+        }
+        static DefaultEventStore InitEventStore()
+        {
             var chunkFileStoreRootPath = @"d:\event-store";
-            var eventDataChunkDataSize = 256 * 1024 * 1024;
+            var eventDataChunkDataSize = 1024 * 1024 * 1024;
             var indexChunkDataSize = 256 * 1024 * 1024;
             var chunkFlushInterval = 100;
-            var chunkCacheMaxCount = 15;
-            var chunkCacheMinCount = 15;
+            var chunkCacheMaxCount = 1;
+            var chunkCacheMinCount = 1;
             var maxDataLogRecordSize = 5 * 1024 * 1024;
             var maxIndexLogRecordSize = 5 * 1024 * 1024;
             var chunkWriteBuffer = 128 * 1024;
@@ -67,9 +120,9 @@ namespace EStoreSample
                 5,
                 chunkLocalCacheSize,
                 true);
-            var eventIndexChunkConfig = new ChunkManagerConfig(
-                Path.Combine(chunkFileStoreRootPath, "event-index-chunks"),
-                new DefaultFileNamingStrategy("event-index-chunk-"),
+            var aggregateIndexChunkConfig = new ChunkManagerConfig(
+                Path.Combine(chunkFileStoreRootPath, "aggregate-index-chunks"),
+                new DefaultFileNamingStrategy("aggregate-index-chunk-"),
                 indexChunkDataSize,
                 0,
                 0,
@@ -110,56 +163,11 @@ namespace EStoreSample
 
             var eventStore = ObjectContainer.Resolve<IEventStore>() as DefaultEventStore;
 
-            eventStore.Init(eventDataChunkConfig, eventIndexChunkConfig, commandIndexChunkConfig);
+            eventStore.Init(eventDataChunkConfig, aggregateIndexChunkConfig, commandIndexChunkConfig);
             eventStore.Start();
 
-            var totalCount = 100000000;
-            var count = 0;
-            var performanceService = ObjectContainer.Resolve<IPerformanceService>();
-            performanceService.Initialize("WriteChunk").Start();
-
-            Task.Factory.StartNew(() =>
-            {
-                while (true)
-                {
-                    try
-                    {
-                        var start = DateTime.Now;
-                        var current = 0;
-                        var eventStreamList = new List<IEventStream>();
-                        for (var i = 0; i < 10; i++)
-                        {
-                            current = Interlocked.Increment(ref count);
-                            var eventStream = new TestEventStream
-                            {
-                                AggregateRootId = "123456789012345678901234",
-                                AggregateRootType = "Note",
-                                Events = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
-                                Timestamp = DateTime.UtcNow.Ticks,
-                                Version = current,
-                                CommandId = ObjectId.GenerateNewStringId(),
-                                CommandCreateTimestamp = DateTime.Now.Ticks
-                            };
-                            eventStreamList.Add(eventStream);
-                            performanceService.IncrementKeyCount("default", (DateTime.Now - start).TotalMilliseconds);
-                        }
-                        eventStore.AppendEventStreams(eventStreamList);
-                        if (current > totalCount)
-                        {
-                            break;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine(ex.Message);
-                    }
-                }
-            });
-
-            Console.ReadLine();
-            eventStore.Stop();
+            return eventStore;
         }
-
         class TestEventStream : IEventStream
         {
             public string AggregateRootId { get; set; }

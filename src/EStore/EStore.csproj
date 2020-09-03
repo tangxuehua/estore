@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="ECommon" Version="2.6.4" />
+    <ProjectReference Include="..\..\..\ecommon\src\ECommon\ECommon.csproj" />
   </ItemGroup>
 
 </Project>

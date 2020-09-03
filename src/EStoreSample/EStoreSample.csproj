@@ -7,7 +7,7 @@
     <ProjectGuid>{318482C3-14BE-488A-ADA2-F03D5E8C5B5C}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <RootNamespace>EStoreSample</RootNamespace>
-    <AssemblyName>EStoreSample2</AssemblyName>
+    <AssemblyName>EStoreSample</AssemblyName>
     <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
@@ -55,9 +55,6 @@
     <Reference Include="Autofac, Version=5.0.0.0, Culture=neutral, PublicKeyToken=17863af14b0044da, processorArchitecture=MSIL">
       <HintPath>..\..\packages\Autofac.5.0.0\lib\net461\Autofac.dll</HintPath>
     </Reference>
-    <Reference Include="ECommon, Version=2.6.4.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\..\packages\ECommon.2.6.4\lib\netstandard2.0\ECommon.dll</HintPath>
-    </Reference>
     <Reference Include="ECommon.Autofac, Version=2.5.1.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\..\packages\ECommon.Autofac.2.5.1\lib\netstandard2.0\ECommon.Autofac.dll</HintPath>
     </Reference>
@@ -99,6 +96,10 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\..\ecommon\src\ECommon\ECommon.csproj">
+      <Project>{bd8fc218-98d7-4ccc-8f7a-d98d969fb19e}</Project>
+      <Name>ECommon</Name>
+    </ProjectReference>
     <ProjectReference Include="..\EStore\EStore.csproj">
       <Project>{81216b52-86d8-48bb-8807-0e1debf78bf1}</Project>
       <Name>EStore</Name>
